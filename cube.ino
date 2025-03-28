@@ -172,8 +172,7 @@ void loop() {
         }
     } else { // update colors!!
 
-      uint32_t hue = static_cast<uint32_t>(firstByte * 360 / 255);
-      Serial.println(hue);
+      uint32_t hue = static_cast<uint32_t>(firstByte) * 360 / 255;
       for(uint8_t i = 0; i < ledCount; i++)
       {
         colorBuffer[i] = hsvToRgb(hue, saturation, vibrance);
