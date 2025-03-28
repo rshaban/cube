@@ -1,0 +1,597 @@
+#include <Arduino.h>
+#include <FastGPIO.h>
+#define APA102_USE_FAST_GPIO
+#include <APA102.h>
+
+// Set the number of LEDs to control.
+const uint16_t ledCount = 144;
+// Define which pins to use
+// Avoiding pins 0 + 1 (serial communication)
+
+const uint8_t dataPinU PROGMEM = 2;
+const uint8_t dataPinS PROGMEM = 3;
+const uint8_t dataPinW PROGMEM = 5;
+const uint8_t clockPin PROGMEM = 6;
+const uint8_t dataPinD PROGMEM = 7;
+const uint8_t dataPinE PROGMEM = 8;
+const uint8_t dataPinN PROGMEM = 9;
+// Create an object for writing to the LED strip.
+APA102<dataPinU, clockPin> ledStripU;
+APA102<dataPinD, clockPin> ledStripD;
+APA102<dataPinN, clockPin> ledStripN;
+APA102<dataPinS, clockPin> ledStripS;
+APA102<dataPinE, clockPin> ledStripE;
+APA102<dataPinW, clockPin> ledStripW;
+// Create a buffer for holding the colors (3 bytes per color).
+rgb_color colorBuffer[ledCount];
+uint32_t timer;
+/* 
+a few ideas here
+3 buffers, making the most of the available memory
+update a pattern of north/west/up and south/east/down
+is that what the wire corners work out to be?
+i want to follow that
+
+only update the necessary leds. dont rewrite the whole strip?
+*/
+
+const uint8_t uCorners[] PROGMEM = {0,142, 35,36, 71,72, 107};
+const uint8_t dCorners[] PROGMEM = {140, 33, 68,69, 105};
+const uint8_t nCorners[] PROGMEM = {0,143, 35,36, 71,72, 107,108};
+const uint8_t sCorners[] PROGMEM = {0,143, 35,36, 71,72, 107};
+const uint8_t eCorners[] PROGMEM = {0, 36, 71,72, 107};
+const uint8_t wCorners[] PROGMEM = {0, 36, 71,72, 107};
+// Set the brightness to use (software maximum is 31).
+// CHILL. 14A MAXIMUM ON 16GA WIRE, MAKE SOFTWARE LOCK AT WHATEVER 10A COMES OUT TO.
+// DO TESTING.
+uint8_t brightness = 1;
+rgb_color mainColor = rgb_color(100,100,100);
+
+/*
+// #include <Ethernet.h>
+// #include <SD.h>
+// // Avoiding pins 4, 10, 11, 12, 13 (SD card + SPI communication to Ethernet shield)
+// // SD card chip select pin
+// const int SDpin PROGMEM = 4;
+// EthernetServer server(80);  // Port 80 for HTTP
+// bool ethernetConnect = true;
+
+
+// void serveHTML(EthernetClient &client) {
+//   // Open the HTML file from the SD card
+//   File htmlFile = SD.open("index.html");
+
+//   if (htmlFile) {
+//     // Send HTTP headers
+//     client.println("HTTP/1.1 200 OK");
+//     client.println("Content-Type: text/html");
+//     client.println("Connection: close");
+//     client.println();
+
+//     // Send the HTML content
+//     while (htmlFile.available()) {
+//       client.write(htmlFile.read());
+//     }
+
+//     htmlFile.close();
+//   } else {
+//     // Serve a 404 page if the file is not found
+//     client.println("HTTP/1.1 404 Not Found");
+//     client.println("Content-Type: text/html");
+//     client.println("Connection: close");
+//     client.println();
+//     client.println("<html><body><h1>404 Not Found</h1></body></html>");
+//   }
+// }
+
+// void handlePostRequest(EthernetClient &client) {
+//   String postData = "";
+  
+//   // Read POST data
+//   while (client.available()) {
+//     char c = client.read();
+//     postData += c;
+//   }
+
+//   // Display POST data for debugging
+//   Serial.println("POST data received:");
+//   Serial.println(postData);
+
+//   // Respond to the client
+//   client.println("HTTP/1.1 200 OK");
+//   client.println("Content-Type: text/html");
+//   client.println("Connection: close");
+//   client.println();
+
+//   // Display a success message after receiving the POST data
+//   client.println("<html><body><h1>Form Submitted Successfully!</h1>");
+//   client.println("<p>Data received: " + postData + "</p>");
+//   client.println("</body></html>");
+// }
+
+
+
+
+
+
+
+
+
+
+*/
+
+rgb_color hsvToRgb(uint32_t h, uint8_t s, uint8_t v){
+    uint8_t f = (h % 60) * 255 / 60;
+    uint8_t p = (255 - s) * (uint16_t)v / 255;
+    uint8_t q = (255 - f * (uint16_t)s / 255) * (uint16_t)v / 255;
+    uint8_t t = (255 - (255 - f) * (uint16_t)s / 255) * (uint16_t)v / 255;
+    uint8_t r = 0, g = 0, b = 0;
+    switch((h / 60) % 6){
+        case 0: r = v; g = t; b = p; break;
+        case 1: r = q; g = v; b = p; break;
+        case 2: r = p; g = v; b = t; break;
+        case 3: r = p; g = q; b = v; break;
+        case 4: r = t; g = p; b = v; break;
+        case 5: r = v; g = p; b = q; break;
+    }
+    return rgb_color(r, g, b);
+}
+
+bool contains(const uint8_t* arr, int size, uint8_t value) {
+  for (int i = 0; i < size; i++) {
+    if (arr[i] == value) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void updateUp(uint8_t currentTime){
+
+  // make it rainbow
+  for(uint8_t i = 0; i < ledCount; i++)
+  {
+    uint8_t p = currentTime;
+    colorBuffer[i] = hsvToRgb((uint32_t)p * 359 / 256, 255, 15);
+  }
+
+  // make all but corners white
+  for(uint8_t i = 0; i < ledCount; i++)
+  {
+    if(contains(uCorners, sizeof(uCorners) / sizeof(uCorners[0]), i)){
+      continue;
+    }
+    else{
+      colorBuffer[i] = mainColor;
+    }
+  }
+  ledStripU.write(colorBuffer, ledCount, brightness);
+}
+void updateUp(rgb_color inputColorBuffer[]){
+  ledStripU.write(inputColorBuffer, ledCount, brightness);
+}
+
+void updateDown(uint8_t currentTime){
+
+  // make it rainbow
+  for(uint8_t i = 0; i < ledCount; i++)
+  {
+    uint8_t p = currentTime;
+    colorBuffer[i] = hsvToRgb((uint32_t)p * 359 / 256, 255, 15);
+  }
+
+  // make all but corners white
+  for(uint8_t i = 0; i < ledCount; i++)
+  {
+    if(contains(dCorners, sizeof(dCorners) / sizeof(dCorners[0]), i)){
+      continue;
+    }
+    else{
+      colorBuffer[i] = mainColor;
+    }
+  }
+  ledStripD.write(colorBuffer, ledCount, brightness);
+}
+void updateDown(rgb_color inputColorBuffer[]){
+  ledStripD.write(inputColorBuffer, ledCount, brightness);
+}
+
+void updateNorth(uint8_t currentTime){
+
+  // make it rainbow
+  for(uint8_t i = 0; i < ledCount; i++)
+  {
+    uint8_t p = currentTime;
+    colorBuffer[i] = hsvToRgb((uint32_t)p * 359 / 256, 255, 15);
+  }
+
+  // make all but corners white
+  for(uint8_t i = 0; i < ledCount; i++)
+  {
+    if(contains(nCorners, sizeof(nCorners) / sizeof(nCorners[0]), i)){
+      continue;
+    }
+    else{
+      colorBuffer[i] = mainColor;
+    }
+  }
+  ledStripN.write(colorBuffer, ledCount, brightness);
+}
+void updateNorth(rgb_color inputColorBuffer[]){
+  ledStripN.write(inputColorBuffer, ledCount, brightness);
+}
+
+void updateSouth(uint8_t currentTime){
+
+  // make it rainbow
+  for(uint8_t i = 0; i < ledCount; i++)
+  {
+    uint8_t p = currentTime;
+    colorBuffer[i] = hsvToRgb((uint32_t)p * 359 / 256, 255, 15);
+  }
+
+  // make all but corners white
+  for(uint8_t i = 0; i < ledCount; i++)
+  {
+    if(contains(sCorners, sizeof(sCorners) / sizeof(sCorners[0]), i)){
+      continue;
+    }
+    else{
+      colorBuffer[i] = mainColor;
+    }
+  }
+  ledStripS.write(colorBuffer, ledCount, brightness);
+}
+void updateSouth(rgb_color inputColorBuffer[]){
+  ledStripS.write(inputColorBuffer, ledCount, brightness);
+}
+ 
+void updateEast(uint8_t currentTime){
+
+  // make it rainbow
+  for(uint8_t i = 0; i < ledCount; i++)
+  {
+    uint8_t p = currentTime;
+    colorBuffer[i] = hsvToRgb((uint32_t)p * 359 / 256, 255, 15);
+  }
+
+  // make all but corners white
+  for(uint8_t i = 0; i < ledCount; i++)
+  {
+    if(contains(eCorners, sizeof(eCorners) / sizeof(eCorners[0]), i)){
+      continue;
+    }
+    else{
+      colorBuffer[i] = mainColor;
+    }
+  }
+  ledStripE.write(colorBuffer, ledCount, brightness);
+}
+void updateEast(rgb_color inputColorBuffer[]){
+  ledStripE.write(inputColorBuffer, ledCount, brightness);
+}
+
+void updateWest(uint8_t currentTime){
+
+  // make it rainbow
+  for(uint8_t i = 0; i < ledCount; i++)
+  {
+    uint8_t p = currentTime;
+    colorBuffer[i] = hsvToRgb((uint32_t)p * 359 / 256, 255, 15);
+  }
+
+  // make all but corners white
+  for(uint8_t i = 0; i < ledCount; i++)
+  {
+    if(contains(wCorners, sizeof(wCorners) / sizeof(wCorners[0]), i)){
+      continue;
+    }
+    else{
+      colorBuffer[i] = mainColor;
+    }
+  }
+  ledStripW.write(colorBuffer, ledCount, brightness);
+}
+void updateWest(rgb_color inputColorBuffer[]){
+  ledStripW.write(inputColorBuffer, ledCount, brightness);
+}
+
+
+
+void setup() {
+
+  Serial.begin(115200); 
+/*
+  // // start the Ethernet connection:
+  // byte mac[] = {0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE};
+  // Serial.println(F("Initialize Ethernet with DHCP..."));
+  // if (Ethernet.begin(mac) == 0) {
+  //   Serial.println(F("Failed to configure Ethernet using DHCP"));
+  //   if (Ethernet.hardwareStatus() == EthernetNoHardware) {
+  //     Serial.println(F("Ethernet shield was not found."));
+  //   } else if (Ethernet.linkStatus() == LinkOFF) {
+  //     Serial.println(F("Ethernet cable is not connected."));
+  //   }
+  //   ethernetConnect = false;
+  // }
+
+  // Serial.print(F("My IP address: "));
+  // Serial.println(Ethernet.localIP());
+
+  // server.begin();
+
+  // // Initialize server
+  // if (!SD.begin(SDpin)) {
+  //   Serial.println(F("SD card initialization failed!"));
+  //   return;
+  // }
+  // Serial.println(F("SD card is ready!"));*/
+
+}  // setup()
+
+
+
+void loop() {
+
+  uint32_t time0, time6; // time1, time2, time3, time4, time5,
+  uint8_t LEDhue; //micros() >> 2;
+
+  if (Serial.available() > 0) {
+    int incomingByte = Serial.read(); // Read the incoming value as an integer
+    // Ensure the incoming value is between 0 and 255
+    if (incomingByte >= 0 && incomingByte <= 255) {
+      
+      LEDhue = static_cast<uint8_t>(incomingByte);
+      uint32_t h = (uint32_t)LEDhue * 360 / 255;
+      for(uint8_t i = 0; i < ledCount; i++)
+      {
+        colorBuffer[i] = hsvToRgb(h, 255, 15);
+      }
+
+      //timing measurements
+      time0 = micros();
+      
+      // update all? strips
+      updateUp(colorBuffer);
+      // time1 = micros();
+      updateDown(colorBuffer);
+      // time2 = micros();
+      updateNorth(colorBuffer);
+      // time3 = micros();
+      updateSouth(colorBuffer);
+      // time4 = micros();
+      updateEast(colorBuffer);
+      // time5 = micros();
+      updateWest(colorBuffer);
+
+      time6 = micros();
+
+      uint32_t iterTime = (time6 - time0) / 6;
+      timer += iterTime > 0 ? iterTime : timer;
+      timer /= 2; // calculate average again...
+      Serial.println(timer);
+    } else {
+      Serial.println(F("Please enter a value between 0 and 255."));
+    }
+    while(Serial.available() > 0){
+      Serial.read(); // ignore cr/lf
+    }
+  }
+/*
+  // Serial.println("delta (avg): " + String((time6 - time0) / 6));
+  // Serial.println("delta (1): " + String(time1 - time0));
+  // Serial.println("delta (2): " + String(time2 - time1));
+  // Serial.println("delta (3): " + String(time3 - time2));
+  // Serial.println("delta (4): " + String(time4 - time3));
+  // Serial.println("delta (5): " + String(time5 - time4));
+  // Serial.println("delta (6): " + String(time6 - time5));
+
+
+
+
+
+
+  // EthernetClient client = server.available();  // Wait for a client to connect
+
+  // if (client) {
+  //   Serial.println(F("New client connected"));
+  //   String currentLine = "";
+  //   bool formSubmitted = false;
+
+  //   // Read the HTTP request from the client
+  //   while (client.connected()) {
+  //     if (client.available()) {
+  //       char c = client.read();
+  //       Serial.write(c);  // Debug print request in Serial Monitor
+        
+  //       // Read the request line by line
+  //       if (c == '\n') {
+  //         // If we received a blank line, the HTTP headers are complete
+  //         if (currentLine.length() == 0) {
+  //           // Serve the HTML page
+  //           serveHTML(client);
+
+  //           // Check if it is a POST request
+  //           if (formSubmitted) {
+  //             handlePostRequest(client);
+  //           }
+  //           break;
+  //         } else {
+  //           // Handle POST request and form submission
+  //           if (currentLine.startsWith("POST /submit")) {
+  //             formSubmitted = true;
+  //           }
+  //           currentLine = "";
+  //         }
+  //       } else if (c != '\r') {
+  //         currentLine += c;  // Add characters to current line
+  //       }
+  //     }
+  //   }
+  //   // Close the connection
+  //   client.stop();
+  //   Serial.println(F("Client disconnected"));
+  // }
+
+  // if(ethernetConnect){
+  //   switch (Ethernet.maintain()) {
+  //     case 1:
+  //       //renewed fail
+  //       Serial.println(F("Error: renewed fail"));
+  //       break;
+
+  //     case 2:
+  //       //renewed success
+  //       Serial.println(F("Renewed success"));
+  //       //print your local IP address:
+  //       Serial.print(F("My IP address: "));
+  //       Serial.println(Ethernet.localIP());
+  //       break;
+
+  //     case 3:
+  //       //rebind fail
+  //       Serial.println(F("Error: rebind fail"));
+  //       break;
+
+  //     case 4:
+  //       //rebind success
+  //       Serial.println(F("Rebind success"));
+  //       //print your local IP address:
+  //       Serial.print(F("My IP address: "));
+  //       Serial.println(Ethernet.localIP());
+  //       break;
+
+  //     default:
+  //       //nothing happened
+  //       break;
+  //   } 
+  // }*/
+}  // loop()
+
+/* rail calibrations
+  // top strip calibrated
+
+  colorsU[1] = rgb_color(0,0,255),
+  colorsU[0] = rgb_color(255,255,255),
+  colorsU[142] = rgb_color(255,255,255);
+  colorsU[141] = rgb_color(255,0,0);
+
+  colorsU[34] = rgb_color(255,0,0),
+  colorsU[35] = rgb_color(255,255,255),
+  colorsU[36] = rgb_color(255,255,255),
+  colorsU[37] = rgb_color(0,0,255);
+
+  colorsU[70] = rgb_color(255,0,0);
+  colorsU[71] = rgb_color(255,255,255);
+  colorsU[72] = rgb_color(255,255,255);
+  colorsU[73] = rgb_color(0,0,255);
+
+  colorsU[106] = rgb_color(255,0,0),
+  colorsU[107] = rgb_color(255,255,255);
+  colorsU[108] = rgb_color(0,0,255);
+  
+  // bottom strip calibrated
+  
+  colorsD[0] = rgb_color(0,0,255), // fucking gap.
+  colorsD[140] = rgb_color(255,255,255),
+  colorsD[139] = rgb_color(255,0,0);
+
+  colorsD[32] = rgb_color(255,0,0), // covered by wires
+  colorsD[33] = rgb_color(255,255,255),
+  colorsD[34] = rgb_color(0,0,255);
+
+  colorsD[67] = rgb_color(255,0,0); 
+  colorsD[68] = rgb_color(255,255,255);
+  colorsD[69] = rgb_color(255,255,255);
+  colorsD[70] = rgb_color(0,0,255);
+
+  colorsD[103] = rgb_color(255,0,0),
+  colorsD[104] = rgb_color(255,255,255);
+  colorsD[105] = rgb_color(255,255,255);
+  colorsD[106] = rgb_color(0,0,255);
+  
+  // north calibrated
+  
+  colorsN[1] = rgb_color(0,0,255),
+  colorsN[0] = rgb_color(255,255,255),
+  colorsN[143] = rgb_color(255,255,255),
+  colorsN[142] = rgb_color(255,0,0);
+
+  colorsN[35] = rgb_color(255,0,0),
+  colorsN[36] = rgb_color(255,255,255),
+  colorsN[37] = rgb_color(0,0,255);
+
+  colorsN[70] = rgb_color(255,0,0);
+  colorsN[71] = rgb_color(255,255,255);
+  colorsN[72] = rgb_color(255,255,255);
+  colorsN[73] = rgb_color(0,0,255);
+
+  colorsN[107] = rgb_color(255,0,0),
+  colorsN[108] = rgb_color(255,255,255);
+  colorsN[109] = rgb_color(0,0,255);
+  
+  // south calibrated
+  
+  colorsS[1] = rgb_color(255,0,0),
+  colorsS[0] = rgb_color(255,255,255),
+  colorsS[143] = rgb_color(255,255,255),
+  colorsS[142] = rgb_color(0,0,255);
+
+  colorsS[34] = rgb_color(255,0,0),
+  colorsS[35] = rgb_color(255,255,255),
+  colorsS[36] = rgb_color(255,255,255),
+  colorsS[37] = rgb_color(0,0,255);
+
+  colorsS[70] = rgb_color(255,0,0);
+  colorsS[71] = rgb_color(255,255,255);
+  colorsS[72] = rgb_color(255,255,255);
+  colorsS[73] = rgb_color(0,0,255);
+
+  colorsS[106] = rgb_color(255,0,0),
+  colorsS[107] = rgb_color(255,255,255);
+  colorsS[108] = rgb_color(255,255,255);
+  colorsS[109] = rgb_color(0,0,255);
+  
+  // east calibrated
+  
+  colorsE[0] = rgb_color(255,255,255),
+  colorsE[1] = rgb_color(255,0,0),
+  colorsE[142] = rgb_color(0,0,255);
+
+  colorsE[35] = rgb_color(255,0,0),
+  colorsE[36] = rgb_color(255,255,255),
+  colorsE[37] = rgb_color(255,255,255);
+  colorsE[38] = rgb_color(0,0,255);
+
+  colorsE[70] = rgb_color(255,0,0);
+  colorsE[71] = rgb_color(255,255,255);
+  colorsE[72] = rgb_color(255,255,255);
+  colorsE[73] = rgb_color(0,0,255);
+
+  colorsE[106] = rgb_color(255,0,0),
+  colorsE[107] = rgb_color(255,255,255);
+  colorsE[108] = rgb_color(255,255,255);
+  colorsE[109] = rgb_color(0,0,255);
+
+
+  // west calibrated
+  
+  colorsW[1] = rgb_color(0,0,255),
+  colorsW[0] = rgb_color(255,255,255),
+  colorsW[142] = rgb_color(255,255,255),
+  colorsW[141] = rgb_color(255,0,255);
+
+  colorsW[35] = rgb_color(255,0,0),
+  colorsW[36] = rgb_color(255,255,255),
+  colorsW[37] = rgb_color(255,255,255);
+  colorsW[37] = rgb_color(0,0,255);
+
+  colorsW[70] = rgb_color(255,0,0);
+  colorsW[71] = rgb_color(255,255,255);
+  colorsW[72] = rgb_color(255,255,255);
+  colorsW[72] = rgb_color(0,0,255);
+
+  colorsW[106] = rgb_color(255,0,0),
+  colorsW[107] = rgb_color(255,255,255);
+  colorsW[108] = rgb_color(0,0,255);
+*/
